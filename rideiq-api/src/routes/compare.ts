@@ -1,5 +1,5 @@
 import { Router, Request, Response } from "express";
-import { getRideEstimates } from "../services/rideService.js";
+import { getRideEstimates } from "../services/rideService";
 
 const router = Router();
 
