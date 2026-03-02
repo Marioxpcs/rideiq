@@ -1,8 +1,10 @@
 import { getSurgeMultiplier } from "./surgeModel";
-import { saveSnapshot } from "./trendStore";
-import { getTrend } from "./trendAnalyzer";
+import { getHistory, saveSnapshot } from "./trendStore";
+import { getTrend, getVolatility } from "./trendAnalyzer";
 import { recommendRide } from "./recommendation";
 import { getDistance } from "geolib";
+import { generateAdvisor } from "./advisorEngine";
+
 export async function getRideEstimates(
   pickup: [number, number],
   destination: [number, number]
@@ -56,36 +58,64 @@ const basePickupEta = Math.round(
 const uberEta = basePickupEta + Math.floor(Math.random() * 3);
 const lyftEta = basePickupEta + Math.floor(Math.random() * 3);
 
-  const results = [
-   {
-  provider: "Uber",
-  price: uberPrice,
-  eta_minutes: uberEta,
-  currency: "CAD",
-  surge_multiplier: uberSurge,
-  trend: getTrend("Uber") as "unknown" | "rising" | "falling" | "stable"
-},
-    {
-  provider: "Lyft",
-  price: lyftPrice,
-  eta_minutes: lyftEta,
-  currency: "CAD",
-  surge_multiplier: lyftSurge,
-  trend: getTrend("Lyft") as "unknown" | "rising" | "falling" | "stable"
-},
-  ];
-
-  const bestOption = recommendRide(results);
-
   // Save snapshots
   saveSnapshot("Uber", uberPrice, uberEta);
   saveSnapshot("Lyft", lyftPrice, lyftEta);
 
-return {
-  timestamp: new Date().toISOString(),
-  pickup,
-  destination,
-  options: results,
-  best_option: bestOption
-};
+  const uberTrend = getTrend("Uber") as "unknown" | "rising" | "falling" | "stable";
+  const lyftTrend = getTrend("Lyft") as "unknown" | "rising" | "falling" | "stable";
+  const uberVolatility = getVolatility("Uber");
+  const lyftVolatility = getVolatility("Lyft");
+  const uberHistory = getHistory("Uber");
+  const lyftHistory = getHistory("Lyft");
+
+  const results = [
+    {
+      provider: "Uber",
+      price: uberPrice,
+      eta_minutes: uberEta,
+      currency: "CAD",
+      surge_multiplier: uberSurge,
+      trend: uberTrend,
+      volatility_score: uberVolatility.score,
+      volatility_level: uberVolatility.level,
+      recent_prices: uberHistory.map((snapshot) => snapshot.price),
+    },
+    {
+      provider: "Lyft",
+      price: lyftPrice,
+      eta_minutes: lyftEta,
+      currency: "CAD",
+      surge_multiplier: lyftSurge,
+      trend: lyftTrend,
+      volatility_score: lyftVolatility.score,
+      volatility_level: lyftVolatility.level,
+      recent_prices: lyftHistory.map((snapshot) => snapshot.price),
+    },
+  ];
+
+  const bestOption = recommendRide(results);
+
+  if (bestOption === null) {
+    return {
+      timestamp: new Date().toISOString(),
+      pickup,
+      destination,
+      options: results,
+      best_option: null,
+      advisor: "no available rides",
+    };
+  }
+
+  const fullBestOption = results.find((r) => r.provider === bestOption.provider) ?? results[0]!;
+  const advisor = generateAdvisor(results, fullBestOption);
+
+  return {
+    timestamp: new Date().toISOString(),
+    pickup,
+    destination,
+    options: results,
+    best_option: bestOption,
+    advisor,
+  };
 }

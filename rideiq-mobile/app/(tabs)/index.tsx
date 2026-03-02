@@ -1,383 +1,345 @@
-// rideiq-mobile/app/(tabs)/index.tsx
-
+import React, { useRef, useState } from "react";
 import {
+  Animated,
+  Pressable,
   ScrollView,
-  Text,
-  Button,
-  View,
   StyleSheet,
-  TextInput,
+  Text,
 } from "react-native";
-import { useState, useEffect, useRef } from "react";
-import axios from "axios";
-import { useColorScheme } from "@/hooks/use-color-scheme";
-import { Colors } from "@/constants/theme";
 import { SafeAreaView } from "react-native-safe-area-context";
+import axios from "axios";
+import { API_BASE } from "@/constants/api";
+import { RideIQTheme } from "@/constants/rideiq-theme";
+import { useSuggestions } from "@/hooks/useSuggestions";
+import { LocationInput } from "@/components/rideiq/location-input";
+import { ProviderCard } from "@/components/rideiq/provider-card";
+import { AdvisorCard } from "@/components/rideiq/advisor-card";
+import { LoadingState } from "@/components/rideiq/loading-state";
+import { ErrorState } from "@/components/rideiq/error-state";
+import { EmptyState } from "@/components/rideiq/empty-state";
+import { ExplainerModal } from "@/components/rideiq/explainer-modal";
+import type {
+  AdvisorResponse,
+  CompareResponse,
+  SuggestionItem,
+} from "@/types/compare";
 
-const API_BASE = "http://10.0.0.77:3001";
+type AdvisorForUI =
+  Pick<
+    AdvisorResponse,
+    "recommendation" | "reasoning" | "volatility_level" | "volatility_score"
+  > &
+  Partial<Pick<AdvisorResponse, "expected_savings" | "confidence">>;
+
+type AppState = "idle" | "loading" | "results" | "error";
 
 export default function HomeScreen() {
-  // =============================
-  // LOCATION STATE
-  // =============================
-
-  // Pickup
   const [pickupQuery, setPickupQuery] = useState("");
-  const [pickupSuggestions, setPickupSuggestions] = useState<any[]>([]);
-  const [pickupCoords, setPickupCoords] =
-    useState<[number, number] | null>(null);
-
-  // Destination
   const [destinationQuery, setDestinationQuery] = useState("");
-  const [destinationSuggestions, setDestinationSuggestions] =
-    useState<any[]>([]);
-  const [destinationCoords, setDestinationCoords] =
-    useState<[number, number] | null>(null);
+  const [pickupCoords, setPickupCoords] = useState<[number, number] | null>(
+    null
+  );
+  const [destinationCoords, setDestinationCoords] = useState<
+    [number, number] | null
+  >(null);
 
-  // =============================
-  // APP STATE
-  // =============================
+  const [data, setData] = useState<CompareResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [appState, setAppState] = useState<AppState>("idle");
+  const [showExplainer, setShowExplainer] = useState(false);
 
-  const [data, setData] = useState<any>(null);
-  const [loading, setLoading] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-
-  const colorScheme = useColorScheme();
-  const textColor = Colors[colorScheme ?? "light"].text;
-
+  const fadeAnim = useRef(new Animated.Value(0)).current;
   const scrollRef = useRef<ScrollView>(null);
 
-  // =============================
-  // SELECTION HANDLERS
-  // =============================
+  const pickupSuggestions = useSuggestions(pickupCoords ? "" : pickupQuery);
+  const destinationSuggestions = useSuggestions(
+    destinationCoords ? "" : destinationQuery
+  );
 
-  const handlePickupSelect = (item: any) => {
-    setPickupQuery(item.formatted);
-    setPickupCoords([item.lat, item.lng]);
-    setPickupSuggestions([]);
+  const clearResults = () => {
+    setData(null);
+    if (appState !== "loading") {
+      setAppState("idle");
+    }
   };
 
-  const handleDestinationSelect = (item: any) => {
-    setDestinationQuery(item.formatted);
-    setDestinationCoords([item.lat, item.lng]);
-    setDestinationSuggestions([]);
+  const handleSelect = (
+    item: SuggestionItem,
+    setterQuery: React.Dispatch<React.SetStateAction<string>>,
+    setterCoords: React.Dispatch<React.SetStateAction<[number, number] | null>>
+  ) => {
+    const lng = item.lng ?? item.lon;
+    if (lng === undefined) {
+      setError("Selected location is missing coordinates. Please choose another suggestion.");
+      return;
+    }
+
+    setError(null);
+    setterQuery(item.formatted);
+    setterCoords([item.lat, lng]);
+
+    if (appState === "error") {
+      setAppState("idle");
+    }
   };
 
-  // =============================
-  // FETCH COMPARE
-  // =============================
-
-  const fetchData = async () => {
-    if (!pickupCoords || !destinationCoords) return;
+  const handleCompare = async () => {
+    if (!pickupCoords || !destinationCoords) {
+      setError("Please select valid locations from suggestions.");
+      setAppState("idle");
+      return;
+    }
 
     try {
-      setLoading(true);
-      setErrorMsg(null);
+      setError(null);
+      setAppState("loading");
 
-      const res = await axios.post(`${API_BASE}/compare`, {
+      const response = await axios.post<CompareResponse>(`${API_BASE}/compare`, {
         pickup: pickupCoords,
         destination: destinationCoords,
       });
 
-      setData(res.data);
-    } catch (err: any) {
-      setErrorMsg(
-        err?.response?.data?.error ||
-          err?.message ||
-          "Something went wrong"
+      const options = Array.isArray(response.data?.options)
+        ? response.data.options
+        : [];
+
+      const missingVolatilityFields = options.some(
+        (opt) =>
+          opt?.volatility_level === undefined ||
+          opt?.volatility_score === undefined ||
+          !Array.isArray(opt?.recent_prices)
       );
-    } finally {
-      setLoading(false);
+
+      if (missingVolatilityFields) {
+        setError(
+          "API response is missing expected analytics fields. Restart rideiq-api with npm run dev."
+        );
+        setData(null);
+        setAppState("error");
+        return;
+      }
+
+      setData(response.data);
+      setAppState("results");
+
+      Animated.timing(fadeAnim, {
+        toValue: 1,
+        duration: 350,
+        useNativeDriver: true,
+      }).start(() => {
+        scrollRef.current?.scrollToEnd({ animated: true });
+      });
+    } catch (err) {
+      console.error(err);
+      setError("Failed to fetch estimates. Check API/server connection and try again.");
+      setData(null);
+      setAppState("error");
     }
   };
 
-  // =============================
-  // PICKUP SUGGESTIONS
-  // =============================
+  const handleReset = () => {
+    setError(null);
+    setData(null);
+    setAppState("idle");
+  };
 
-  useEffect(() => {
-    if (!pickupQuery) {
-      setPickupSuggestions([]);
-      return;
-    }
+  const advisorRaw = data?.advisor;
+  const advisor =
+    advisorRaw && typeof advisorRaw === "object"
+      ? (advisorRaw as AdvisorForUI)
+      : null;
+  const bestOption = data?.best_option ?? null;
 
-    const timeout = setTimeout(async () => {
-      try {
-        const res = await axios.get(`${API_BASE}/suggest`, {
-          params: { q: pickupQuery },
-        });
-        setPickupSuggestions(res.data);
-      } catch (err) {
-        console.error("Pickup suggestion error:", err);
-      }
-    }, 400);
+  const fallbackAdvisor: AdvisorForUI | null =
+    bestOption !== null
+      ? {
+          recommendation: "BOOK_NOW" as const,
+          reasoning: `Best current option is ${bestOption.provider} at $${bestOption.price} ${bestOption.currency}.`,
+          volatility_level: bestOption.volatility_level,
+          volatility_score: bestOption.volatility_score,
+        }
+      : null;
 
-    return () => clearTimeout(timeout);
-  }, [pickupQuery]);
+  const advisorToShow = advisor ?? fallbackAdvisor;
 
-  // =============================
-  // DESTINATION SUGGESTIONS
-  // =============================
+  const recommendation = advisorToShow?.recommendation ?? null;
+  const advisorDecision =
+    recommendation === "BOOK_NOW"
+      ? `BOOK NOW${bestOption?.provider ? ` - ${bestOption.provider}` : ""}`
+      : recommendation === "WAIT"
+      ? "WAIT"
+      : null;
+  const advisorReasoning = advisorToShow?.reasoning ?? null;
+  const advisorSavings =
+    typeof advisorToShow?.expected_savings === "number"
+      ? advisorToShow.expected_savings
+      : undefined;
+  const advisorConfidence =
+    typeof advisorToShow?.confidence === "number"
+      ? Math.max(0, Math.min(100, advisorToShow.confidence))
+      : null;
 
-  useEffect(() => {
-    if (!destinationQuery) {
-      setDestinationSuggestions([]);
-      return;
-    }
+  const volatilityLevel =
+    bestOption?.volatility_level ?? advisorToShow?.volatility_level;
+  const volatilityScore =
+    typeof bestOption?.volatility_score === "number"
+      ? bestOption.volatility_score
+      : typeof advisorToShow?.volatility_score === "number"
+      ? advisorToShow.volatility_score
+      : null;
 
-    const timeout = setTimeout(async () => {
-      try {
-        const res = await axios.get(`${API_BASE}/suggest`, {
-          params: { q: destinationQuery },
-        });
-        setDestinationSuggestions(res.data);
-      } catch (err) {
-        console.error("Destination suggestion error:", err);
-      }
-    }, 400);
+  const isHighVolatility = volatilityLevel === "high";
 
-    return () => clearTimeout(timeout);
-  }, [destinationQuery]);
-
-  // =============================
-  // AUTO SCROLL RESULTS
-  // =============================
-
-  useEffect(() => {
-    if (data && scrollRef.current) {
-      scrollRef.current.scrollToEnd({ animated: true });
-    }
-  }, [data]);
-
-  // =============================
-  // UI
-  // =============================
+  const canCompare = Boolean(pickupCoords && destinationCoords);
 
   return (
-    <SafeAreaView style={styles.safe}>
+    <SafeAreaView style={styles.safeArea}>
       <ScrollView
-        ref={scrollRef}
         style={styles.container}
+        ref={scrollRef}
         contentContainerStyle={styles.contentContainer}
       >
-        {/* HEADER */}
-        <Text style={[styles.title, { color: textColor }]}>
-          RideIQ
-        </Text>
+        <Text style={styles.title}>RideIQ</Text>
 
-        {/* PICKUP INPUT */}
-        <TextInput
+        <LocationInput
+          label="Pickup"
+          placeholder="Pickup location"
           value={pickupQuery}
           onChangeText={(text) => {
             setPickupQuery(text);
             setPickupCoords(null);
+            setError(null);
+            clearResults();
           }}
-          placeholder="Enter pickup location"
-          placeholderTextColor="#888"
-          style={styles.input}
+          suggestions={pickupSuggestions}
+          showSuggestions={!pickupCoords}
+          onSelectSuggestion={(item) =>
+            handleSelect(item, setPickupQuery, setPickupCoords)
+          }
         />
 
-        {pickupSuggestions.map((item, index) => (
-          <Text
-            key={index}
-            style={styles.suggestionItem}
-            onPress={() => handlePickupSelect(item)}
-          >
-            {item.formatted}
-          </Text>
-        ))}
-
-        {/* DESTINATION INPUT */}
-        <TextInput
+        <LocationInput
+          label="Destination"
+          placeholder="Destination"
           value={destinationQuery}
           onChangeText={(text) => {
             setDestinationQuery(text);
             setDestinationCoords(null);
+            setError(null);
+            clearResults();
           }}
-          placeholder="Enter destination"
-          placeholderTextColor="#888"
-          style={styles.input}
+          suggestions={destinationSuggestions}
+          showSuggestions={!destinationCoords}
+          onSelectSuggestion={(item) =>
+            handleSelect(item, setDestinationQuery, setDestinationCoords)
+          }
         />
 
-        {destinationSuggestions.map((item, index) => (
-          <Text
-            key={index}
-            style={styles.suggestionItem}
-            onPress={() => handleDestinationSelect(item)}
-          >
-            {item.formatted}
+        <Pressable
+          onPress={handleCompare}
+          disabled={!canCompare || appState === "loading"}
+          style={[styles.compareButton, (!canCompare || appState === "loading") && styles.compareButtonDisabled]}
+        >
+          <Text style={styles.compareButtonText}>
+            {appState === "loading" ? "Comparing..." : "Compare Rides"}
           </Text>
-        ))}
+        </Pressable>
 
-        {/* COMPARE BUTTON */}
-        <Button
-          title={loading ? "Comparing..." : "Compare Rides"}
-          onPress={fetchData}
-          disabled={loading || !pickupCoords || !destinationCoords}
-        />
+        {error && appState !== "error" && <Text style={styles.errorInline}>{error}</Text>}
 
-        {/* STATUS */}
-        {loading && (
-          <Text style={[styles.status, { color: textColor }]}>
-            Loading…
-          </Text>
+        {appState === "idle" && <EmptyState />}
+
+        {appState === "loading" && <LoadingState />}
+
+        {appState === "error" && (
+          <ErrorState
+            message={error ?? "Something went wrong."}
+            onRetry={handleCompare}
+            onReset={handleReset}
+          />
         )}
 
-        {errorMsg && (
-          <Text style={[styles.status, { color: "red" }]}>
-            {errorMsg}
-          </Text>
-        )}
+        {appState === "results" && data && (
+          <Animated.View style={{ opacity: fadeAnim }}>
+            <Text style={styles.sectionTitle}>Options</Text>
 
-        {/* RESULTS */}
-        {data && (
-          <View style={styles.resultsContainer}>
-            {data.best_option && (
-              <View style={styles.bestCard}>
-                <Text style={styles.bestLabel}>
-                  ⭐ BEST OPTION
-                </Text>
-
-                <Text style={styles.bestProvider}>
-                  {data.best_option.provider}
-                </Text>
-
-                <Text style={styles.bestDetails}>
-                  ${data.best_option.price} CAD • Pickup{" "}
-                  {data.best_option.eta_minutes} min
-                </Text>
-
-                <Text>
-                  Surge x{data.best_option.surge_multiplier}
-                </Text>
-
-                <Text>
-                  {data.best_option.surge_multiplier > 1.3
-                    ? "🔥 High surge"
-                    : data.best_option.surge_multiplier > 1.1
-                    ? "⚠️ Moderate surge"
-                    : "🟢 Normal pricing"}
-                </Text>
-
-                <Text>
-                  {data.best_option.trend === "rising"
-                    ? "📈 Rising"
-                    : data.best_option.trend === "falling"
-                    ? "📉 Falling"
-                    : "🟢 Stable"}
-                </Text>
-              </View>
-            )}
-
-            {data.options?.map((ride: any, i: number) => (
-              <View key={i} style={styles.card}>
-                <Text style={styles.provider}>
-                  {ride.provider}
-                </Text>
-
-                <Text style={styles.price}>
-                  ${ride.price} CAD
-                </Text>
-
-                <Text>
-                  Pickup: {ride.eta_minutes} min
-                </Text>
-
-                <Text>
-                  Surge x{ride.surge_multiplier}
-                </Text>
-
-                <Text>
-                  {ride.surge_multiplier > 1.3
-                    ? "🔥 High surge"
-                    : ride.surge_multiplier > 1.1
-                    ? "⚠️ Moderate surge"
-                    : "🟢 Normal pricing"}
-                </Text>
-
-                <Text>
-                  {ride.trend === "rising"
-                    ? "📈 Rising"
-                    : ride.trend === "falling"
-                    ? "📉 Falling"
-                    : "🟢 Stable"}
-                </Text>
-              </View>
+            {data.options.map((opt, idx) => (
+              <ProviderCard
+                key={`${opt.provider}-${idx}`}
+                option={opt}
+                isBest={data.best_option?.provider === opt.provider}
+              />
             ))}
-          </View>
+
+            {advisorDecision && advisorReasoning && (
+              <>
+                <Text style={styles.sectionTitle}>Advisor</Text>
+                <AdvisorCard
+                  decision={advisorDecision}
+                  reasoning={advisorReasoning}
+                  volatilityLevel={volatilityLevel}
+                  volatilityScore={volatilityScore}
+                  isHighVolatility={isHighVolatility}
+                  expectedSavings={advisorSavings}
+                  confidence={advisorConfidence}
+                  onPressExplain={() => setShowExplainer(true)}
+                />
+              </>
+            )}
+          </Animated.View>
         )}
       </ScrollView>
+
+      <ExplainerModal visible={showExplainer} onClose={() => setShowExplainer(false)} />
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1 },
-  container: { flex: 1 },
-  contentContainer: { padding: 20 },
-
+  safeArea: {
+    flex: 1,
+    backgroundColor: RideIQTheme.colors.background,
+  },
+  container: {
+    flex: 1,
+    paddingHorizontal: RideIQTheme.spacing.xl,
+    backgroundColor: RideIQTheme.colors.background,
+  },
+  contentContainer: {
+    paddingBottom: 40,
+  },
   title: {
-    fontSize: 26,
-    fontWeight: "bold",
-    marginBottom: 20,
+    color: RideIQTheme.colors.textPrimary,
+    fontSize: RideIQTheme.typography.title,
+    fontWeight: "800",
+    marginTop: RideIQTheme.spacing.md,
+    marginBottom: RideIQTheme.spacing.section,
   },
-
-  input: {
-    backgroundColor: "#1f1f1f",
-    padding: 12,
-    borderRadius: 10,
-    color: "white",
-    marginBottom: 10,
+  compareButton: {
+    minHeight: 48,
+    borderRadius: RideIQTheme.radius.md,
+    backgroundColor: RideIQTheme.colors.primary,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: RideIQTheme.spacing.sm,
   },
-
-  status: { marginTop: 10 },
-
-  resultsContainer: { marginTop: 30 },
-
-  bestCard: {
-    backgroundColor: "#4ade80",
-    padding: 18,
-    borderRadius: 16,
-    marginBottom: 18,
+  compareButtonDisabled: {
+    opacity: 0.45,
   },
-
-  bestLabel: {
-    fontWeight: "bold",
-    fontSize: 12,
+  compareButtonText: {
+    color: RideIQTheme.colors.textPrimary,
+    fontWeight: "700",
+    fontSize: RideIQTheme.typography.body,
   },
-
-  bestProvider: {
-    fontSize: 20,
-    fontWeight: "bold",
+  errorInline: {
+    color: RideIQTheme.colors.danger,
+    marginTop: RideIQTheme.spacing.sm,
   },
-
-  bestDetails: { marginTop: 4 },
-
-  card: {
-    backgroundColor: "#1f1f1f",
-    padding: 16,
-    borderRadius: 14,
-    marginTop: 12,
-  },
-
-  provider: {
-    fontSize: 18,
-    fontWeight: "bold",
-    color: "white",
-  },
-
-  suggestionItem: {
-    padding: 10,
-    backgroundColor: "#2a2a2a",
-    color: "white",
-    borderBottomWidth: 1,
-    borderBottomColor: "#333",
-  },
-
-  price: {
-    fontSize: 22,
-    fontWeight: "bold",
-    marginVertical: 6,
-    color: "#4ade80",
+  sectionTitle: {
+    color: RideIQTheme.colors.textPrimary,
+    fontSize: RideIQTheme.typography.section,
+    fontWeight: "800",
+    marginTop: RideIQTheme.spacing.section,
+    marginBottom: RideIQTheme.spacing.md,
   },
 });
