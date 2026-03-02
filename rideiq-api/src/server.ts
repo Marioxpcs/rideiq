@@ -1,9 +1,11 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import compareRouter from "./routes/compare";
-
 dotenv.config();
+import compareRouter from "./routes/compare";
+import suggestRoute from "./routes/suggest";
+
+
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -23,7 +25,7 @@ app.use((req, res, next) => {
 // ---------- ROUTES ----------
 
 app.use("/compare", compareRouter);
-
+app.use("/suggest", suggestRoute);
 // Health check
 app.get("/", (req, res) => {
   res.json({ status: "RideIQ API is running" });

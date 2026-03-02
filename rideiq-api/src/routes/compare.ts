@@ -1,23 +1,33 @@
+import { geocodeAddress } from "../services/geocode";
 import { Router, Request, Response } from "express";
 import { getRideEstimates } from "../services/rideService";
+
 
 const router = Router();
 
 // POST /compare
 // Body: { pickup: [lat, lng], destination: [lat, lng] }
 router.post("/", async (req: Request, res: Response) => {
-  const { pickup, destination } = req.body;
+ const { pickup, destination } = req.body;
 
-  if (!pickup || !destination) {
-    return res.status(400).json({ error: "pickup and destination are required" });
-  }
+// If strings → geocode them
+const pickupCoords =
+  typeof pickup === "string"
+    ? await geocodeAddress(pickup)
+    : pickup;
 
-  try {
-    const estimates = await getRideEstimates(pickup, destination);
-    res.json(estimates);
-  } catch (error) {
-    res.status(500).json({ error: "Failed to fetch ride estimates" });
-  }
+const destCoords =
+  typeof destination === "string"
+    ? await geocodeAddress(destination)
+    : destination;
+
+// Use coords in your existing logic
+const result = await getRideEstimates(
+  pickupCoords,
+  destCoords
+);
+
+res.json(result);
 });
 
 export default router;
